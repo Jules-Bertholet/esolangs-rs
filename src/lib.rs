@@ -1,7 +1,6 @@
-#[cfg(test)]
-mod tests {
-    #[test]
-    fn it_works() {
-        assert_eq!(2 + 2, 4);
+pub mod brainfuck {
+    pub mod prelude {
+        pub use brainfuck_macro::{brainfuck, brainfuck_include};
+        pub use tinyvec::tiny_vec as __bf_macro_tiny_vec;
     }
 }
