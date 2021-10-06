@@ -240,6 +240,7 @@ impl ToTokens for PtrOffset {
 enum Instruction {
     ProgramStart(ProgramStart),
     ShiftPtr(ShiftPtr),
+    ScanLoop(ScanLoop),
     IncrementCell(IncrementCell),
     SetCell(SetCell),
     MultiplyToCell(MultiplyToCell),
@@ -255,6 +256,7 @@ impl ToTokens for Instruction {
         match self {
             Instruction::ProgramStart(instr) => instr.to_tokens(tokens),
             Instruction::ShiftPtr(instr) => instr.to_tokens(tokens),
+            Instruction::ScanLoop(scan) => scan.to_tokens(tokens),
             Instruction::IncrementCell(instr) => instr.to_tokens(tokens),
             Instruction::SetCell(instr) => instr.to_tokens(tokens),
             Instruction::MultiplyToCell(instr) => instr.to_tokens(tokens),
@@ -274,14 +276,12 @@ struct ProgramStart {}
 impl ToTokens for ProgramStart {
     fn to_tokens(&self, tokens: &mut TokenStream) {
         (quote! {
-            let _ = {
-                let mut memory = __bf_macro_tiny_vec!([u8; 30000]);
-                memory.resize(1, 0);
-                let mut ptr: usize = 0;
-                let mut input = ::std::io::stdin();
-                let mut output = ::std::io::stdout();
-                let mut buf = [0u8];
-            };
+            let mut memory = ::esolangs::brainfuck::macro_reexports::tinyvec::tiny_vec!([u8; 30000]);
+            memory.resize(1, 0);
+            let mut ptr: usize = 0;
+            let mut input = ::std::io::stdin();
+            let mut output = ::std::io::stdout();
+            let mut buf = [0u8];
         })
         .to_tokens(tokens);
     }
@@ -306,11 +306,38 @@ impl ToTokens for ShiftPtr {
             PtrOffset::Forward(_) => {
                 (quote! {
                     ptr = ptr #offset;
-                    memory.resize(::core::cmp::max(memory.len(), ptr.wrapping_add(1)), 0);
+                    memory.resize(::core::cmp::max(memory.len(), ptr.checked_add(1).unwrap()), 0);
                 })
                 .to_tokens(tokens);
             }
             PtrOffset::Zero => {}
+        }
+    }
+}
+
+/// `<`, `>`, and combinations thereof.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+struct ScanLoop {
+    value: u8,
+    forward: bool,
+}
+
+impl ToTokens for ScanLoop {
+    fn to_tokens(&self, tokens: &mut TokenStream) {
+        let value = self.value;
+        if self.forward {
+            (quote! {
+                if let Some(offset) = ::esolangs::brainfuck::macro_reexports::memchr::memchr(#value, &(&memory)[ptr..]) {
+                    ptr += offset;
+                } else {
+                    ptr = memory.len();
+                    memory.resize(memory.len().checked_add(1).unwrap(), 0);
+                }
+            }).to_tokens(tokens);
+        } else {
+            (quote! {
+                ptr = ::esolangs::brainfuck::macro_reexports::memchr::memrchr(#value, &(&memory)[..=ptr]).unwrap();
+            }).to_tokens(tokens);
         }
     }
 }
@@ -469,7 +496,7 @@ struct Debug {}
 impl ToTokens for Debug {
     fn to_tokens(&self, tokens: &mut proc_macro2::TokenStream) {
         (quote! {
-            //println!("Pointer: {} | Memory: {}", ptr, memory);
+            println!("Pointer: {} | Memory: {}", ptr, memory);
         })
         .to_tokens(tokens);
     }
@@ -580,6 +607,7 @@ enum InstrAccessingCell<'a> {
     ReadToCell(&'a mut ReadToCell),
     PrintCell(&'a mut PrintCell),
     Loop(&'a mut Loop),
+    ScanLoop(&'a mut ScanLoop),
 }
 
 macro_rules! impl_from_instr_accessing {
@@ -655,6 +683,14 @@ fn last_instr_accessing_cell(
                 }
                 break;
             }
+            (i, Instruction::ScanLoop(scan)) => {
+                if offset == PtrOffset::Zero {
+                    last_accessing = Some((i, InstrAccessingCell::ScanLoop(scan)));
+                } else {
+                    last_accessing = None;
+                }
+                break;
+            }
         }
     }
 
@@ -719,6 +755,13 @@ fn optimize_instruction_coalescing_pass(input: &[Instruction]) -> Vec<Instructio
                             value: amount,
                             offset,
                         })),
+                        InstrAccessingCell::ScanLoop(scan) => {
+                            let value = scan.value;
+                            output.push(Instruction::SetCell(SetCell {
+                                value: amount + value,
+                                offset,
+                            }))
+                        }
                         _ => output.push(instr),
                     }
                 } else {
@@ -726,7 +769,7 @@ fn optimize_instruction_coalescing_pass(input: &[Instruction]) -> Vec<Instructio
                 }
             }
             Instruction::SetCell(set) => {
-                let mut zero_on_start = false;
+                let mut prev_value: Option<u8> = None;
                 while let Some((idx, prev_instr)) = last_instr_accessing_cell(output, set.offset) {
                     match prev_instr {
                         InstrAccessingCell::IncrementCell(_)
@@ -734,15 +777,21 @@ fn optimize_instruction_coalescing_pass(input: &[Instruction]) -> Vec<Instructio
                         | InstrAccessingCell::SetCell(_) => {
                             output.remove(idx);
                         }
-                        InstrAccessingCell::ProgramStart(_) => {
-                            zero_on_start = true;
+                        InstrAccessingCell::ProgramStart(_) | InstrAccessingCell::Loop(_) => {
+                            prev_value = Some(0);
+                            break;
+                        }
+                        InstrAccessingCell::ScanLoop(scan) => {
+                            let value = scan.value;
+                            prev_value = Some(value);
                             break;
                         }
                         _ => break,
                     }
                 }
-                if !(zero_on_start && set.value == 0) {
-                    output.push(instr);
+                match prev_value {
+                    Some(val) if val == set.value => {}
+                    _ => output.push(instr),
                 }
             }
             Instruction::MultiplyToCell(_) => output.push(instr), //TODO
@@ -752,8 +801,15 @@ fn optimize_instruction_coalescing_pass(input: &[Instruction]) -> Vec<Instructio
                         let value = set.value;
                         output.push(Instruction::PrintValue(PrintValue { value }));
                     }
-                    Some((_, InstrAccessingCell::ProgramStart(_))) => {
+                    Some((
+                        _,
+                        InstrAccessingCell::ProgramStart(_) | InstrAccessingCell::Loop(_),
+                    )) => {
                         output.push(Instruction::PrintValue(PrintValue { value: 0 }));
+                    }
+                    Some((_, InstrAccessingCell::ScanLoop(scan))) => {
+                        let value = scan.value;
+                        output.push(Instruction::PrintValue(PrintValue { value }));
                     }
                     _ => output.push(instr),
                 }
@@ -768,26 +824,51 @@ fn optimize_instruction_coalescing_pass(input: &[Instruction]) -> Vec<Instructio
             Instruction::Loop(mut loop_instr) => {
                 loop_instr.inner = optimize_instructions(&loop_instr.inner);
 
-                let mut is_set = false;
+                let mut is_loop = true;
                 if loop_instr.inner.len() == 1 {
-                    if let Instruction::IncrementCell(incr) = loop_instr.inner[0] {
-                        if incr.amount == 0 {
-                            output.push(Instruction::Loop(Loop {
-                                inner: Vec::with_capacity(0),
-                            }));
-                        } else {
-                            is_set = true;
-                            optimized_add_instr(
-                                output,
-                                Instruction::SetCell(SetCell {
-                                    value: 0,
-                                    offset: PtrOffset::Zero,
-                                }),
-                            );
+                    match loop_instr.inner[0] {
+                        Instruction::IncrementCell(incr) => {
+                            if incr.amount == 0 {
+                                loop_instr.inner.clear();
+                            } else {
+                                is_loop = false;
+                                optimized_add_instr(
+                                    output,
+                                    Instruction::SetCell(SetCell {
+                                        value: 0,
+                                        offset: PtrOffset::Zero,
+                                    }),
+                                );
+                            }
                         }
+                        Instruction::ShiftPtr(shift) => match shift.offset {
+                            // TODO detect more kinds of scan loops
+                            PtrOffset::Backward(1usize) => {
+                                is_loop = false;
+                                optimized_add_instr(
+                                    output,
+                                    Instruction::ScanLoop(ScanLoop {
+                                        value: 0,
+                                        forward: false,
+                                    }),
+                                );
+                            }
+                            PtrOffset::Forward(1usize) => {
+                                is_loop = false;
+                                optimized_add_instr(
+                                    output,
+                                    Instruction::ScanLoop(ScanLoop {
+                                        value: 0,
+                                        forward: true,
+                                    }),
+                                );
+                            }
+                            _ => {}
+                        },
+                        _ => (),
                     }
                 }
-                if !is_set {
+                if is_loop {
                     match last_instr_accessing_cell(output, PtrOffset::Zero) {
                         Some((_, prev_instr)) => match prev_instr {
                             InstrAccessingCell::SetCell(set) => {
@@ -795,11 +876,26 @@ fn optimize_instruction_coalescing_pass(input: &[Instruction]) -> Vec<Instructio
                                     output.push(Instruction::Loop(loop_instr));
                                 }
                             }
-                            InstrAccessingCell::Loop(_) | InstrAccessingCell::ProgramStart(_) => {}
+                            InstrAccessingCell::Loop(_)
+                            | InstrAccessingCell::ProgramStart(_)
+                            | InstrAccessingCell::ScanLoop(ScanLoop { value: 0, .. }) => {}
                             _ => output.push(Instruction::Loop(loop_instr)),
                         },
                         _ => output.push(Instruction::Loop(loop_instr)),
                     }
+                }
+            }
+            Instruction::ScanLoop(scan) => {
+                match last_instr_accessing_cell(output, PtrOffset::Zero) {
+                    Some((_, prev_instr)) => match prev_instr {
+                        InstrAccessingCell::SetCell(SetCell { value, .. })
+                        | InstrAccessingCell::ScanLoop(ScanLoop { value, .. })
+                            if value == &scan.value => {}
+                        InstrAccessingCell::Loop(_) | InstrAccessingCell::ProgramStart(_)
+                            if 0 == scan.value => {}
+                        _ => output.push(instr),
+                    },
+                    _ => output.push(instr),
                 }
             }
             _ => output.push(instr),
@@ -836,17 +932,9 @@ impl ToTokens for Ast {
         }
 
         (quote! {
-            let _ = {
-                let mut memory = __bf_macro_tiny_vec!([u8; 30000]);
-                memory.resize(1, 0);
-                let mut ptr: usize = 0;
-                let mut input = ::std::io::stdin();
-                let mut output = ::std::io::stdout();
-                let mut buf = [0u8];
-
-
+            {
                 #instr_tokens
-            };
+            }
         })
         .to_tokens(tokens);
     }

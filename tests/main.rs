@@ -1,4 +1,4 @@
-use esolangs::brainfuck::prelude::*;
+use esolangs::brainfuck::{brainfuck, brainfuck_include};
 
 #[test]
 fn mandelbrot() {
@@ -8,6 +8,11 @@ fn mandelbrot() {
 #[test]
 fn numwarp() {
     brainfuck_include!("tests/bf/numwarp.b");
+}
+
+#[test]
+fn dfbi() {
+    brainfuck_include!("tests/bf/dbfi.b");
 }
 
 // http://brainfuck.org/tests.b
