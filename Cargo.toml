@@ -9,6 +9,7 @@ edition = "2018"
 brainfuck-common = { path = "./crates/brainfuck-common" }
 brainfuck-macro = { path = "./crates/brainfuck-macro" }
 tinyvec = { version = "1.5.0", features = ["alloc", "rustc_1_55"] }
+memchr = { version = "2.4.1", features = ["std"] }
 
 [workspace]
 members = ["crates/*"]
