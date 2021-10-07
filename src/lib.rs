@@ -3,7 +3,7 @@ pub mod brainfuck {
 
     #[doc(hidden)]
     pub mod macro_reexports {
-        pub use ::tinyvec;
         pub use ::memchr;
+        pub use ::tinyvec;
     }
 }

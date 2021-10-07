@@ -396,9 +396,9 @@ impl ToTokens for MultiplyToCell {
         let target_offset = self.target_offset;
         let coef = self.coefficient;
         (match coef {
-            0 => quote! { memory[ptr #target_offset] = 0 },
-            1 => quote! { memory[ptr #target_offset] = memory[ptr #source_offset] },
-            coef => quote! { memory[ptr #target_offset] = memory[ptr #source_offset] * #coef },
+            0 => quote! { },
+            1 => quote! { memory[ptr #target_offset] = memory[ptr #source_offset].wrapping_add(memory[ptr #target_offset]) },
+            coef => quote! { memory[ptr #target_offset] = (memory[ptr #source_offset] * #coef).wrapping_add(memory[ptr #target_offset]) },
         })
         .to_tokens(tokens);
     }
@@ -915,13 +915,19 @@ fn optimize_instruction_coalescing_pass(input: &[Instruction]) -> Vec<Instructio
 }
 
 fn optimize_instructions(input: &[Instruction]) -> Vec<Instruction> {
-    let post = optimize_instruction_coalescing_pass(input);
+    let mut pre = input.to_vec();
+    let mut post: Vec<Instruction>;
 
-    if input == post {
-        post
-    } else {
-        optimize_instruction_coalescing_pass(&post)
+    loop {
+        post = optimize_instruction_coalescing_pass(&pre);
+        if post == pre {
+            break;
+        }
+
+        pre = post;
     }
+
+    post
 }
 
 impl ToTokens for Ast {
