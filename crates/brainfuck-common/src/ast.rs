@@ -722,7 +722,7 @@ fn last_coalescable_ptr_shift_idx(
     shift_idx
 }
 
-fn optimize_instruction_coalescing_pass(input: &[Instruction]) -> Vec<Instruction> {
+fn optimize_coalescing_pass(input: &[Instruction]) -> Vec<Instruction> {
     fn optimized_add_instr(output: &mut Vec<Instruction>, instr: Instruction) {
         //println!("    {:?} {:?} Adding {:?}", output.len(), output, instr);
         match instr {
@@ -914,12 +914,16 @@ fn optimize_instruction_coalescing_pass(input: &[Instruction]) -> Vec<Instructio
     output
 }
 
+fn optimize_reordering_pass() {
+    todo!();
+}
+
 fn optimize_instructions(input: &[Instruction]) -> Vec<Instruction> {
     let mut pre = input.to_vec();
     let mut post: Vec<Instruction>;
 
     loop {
-        post = optimize_instruction_coalescing_pass(&pre);
+        post = optimize_coalescing_pass(&pre);
         if post == pre {
             break;
         }
